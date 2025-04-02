@@ -60,6 +60,7 @@ static size_t			buf_size;
 
 static int			use_sync_ib;
 static int			use_inline_send;
+static int			gid_idx = -1;
 
 static double when(void)
 {
@@ -207,7 +208,7 @@ static int connect_ib(int port, struct business_card *dest)
 		qp_attr.ah_attr.is_global	= 1;
 		qp_attr.ah_attr.grh.hop_limit	= 1;
 		qp_attr.ah_attr.grh.dgid	= dest->gid;
-		qp_attr.ah_attr.grh.sgid_index	= -1;
+		qp_attr.ah_attr.grh.sgid_index	= gid_idx;
 	}
 
 	qp_rtr_flags = IBV_QP_STATE | IBV_QP_AV | IBV_QP_PATH_MTU |
@@ -253,6 +254,7 @@ static int init_ib(int sockfd)
 	struct ibv_qp_attr qp_attr = {};
 	struct ibv_qp_init_attr qp_init_attr = {};
 	struct ibv_port_attr port_attr;
+	char gid_string[33];
 
 	dev_list = ibv_get_device_list(NULL);
 	if (!dev_list) {
@@ -294,21 +296,29 @@ static int init_ib(int sockfd)
 	CHECK_ERROR( ibv_query_port(context, ib_port, &port_attr) );
 
 	/* prepare my information */
-	memset(&me.gid, 0, sizeof me.gid);
+	if (gid_idx >= 0)
+		CHECK_ERROR( ibv_query_gid(context, ib_port, gid_idx, &me.gid) );
+	else
+		memset(&me.gid, 0, sizeof me.gid);
+
 	me.lid = port_attr.lid;
 	me.qpn = qp->qp_num;
 	me.psn = 0;
 	me.buf_addr = (uint64_t)mr->addr;
 	me.buf_rkey = mr->rkey;
 
-	printf("Me:\tlid 0x%04x, qpn 0x%06x, buf %p, rkey %lx\n",
-		me.lid, me.qpn, me.buf_addr, me.buf_rkey);
+	inet_ntop(AF_INET6, &me.gid, gid_string, sizeof gid_string);
+
+	printf("Me:\tlid 0x%04x, qpn 0x%06x, buf %p, rkey %lx, gid %s\n",
+		me.lid, me.qpn, me.buf_addr, me.buf_rkey, gid_string);
 
 	/* exchange information with peer */
 	CHECK_ERROR( exchange_info(sockfd) );
 
-	printf("Peer:\tlid 0x%04x, qpn 0x%06x, buf %p, rkey %lx\n",
-		peer.lid, peer.qpn, peer.buf_addr, peer.buf_rkey);
+	inet_ntop(AF_INET6, &peer.gid, gid_string, sizeof gid_string);
+
+	printf("Peer:\tlid 0x%04x, qpn 0x%06x, buf %p, rkey %lx, gid %s\n",
+		peer.lid, peer.qpn, peer.buf_addr, peer.buf_rkey, gid_string);
 
 	/* connect */
 	CHECK_ERROR( connect_ib(ib_port, &peer ) );
@@ -543,7 +553,7 @@ err_out:
 
 static void usage(char *prog)
 {
-	printf("Usage: %s [-t read|wite|send][-s][-i][-n <iters>][-D <delay][-b][-h] server_name\n", prog);
+	printf("Usage: %s [-t read|wite|send][-s][-i][-n <iters>][-D <delay][-g <gid_idx>][-b][-h] server_name\n", prog);
 	printf("Optins:\n");
 	printf("\t-t <test_type>   Type of test to perform, can be 'read', 'write', or 'send', default: read\n");
 	printf("\t-s               Sync with send/recv at the end\n");
@@ -551,6 +561,7 @@ static void usage(char *prog)
 	printf("\t-b               Run bidirectional test (write and read only)\n");
 	printf("\t-n <iters>       Set number of iterations per message size\n");
 	printf("\t-D <delay>       Microseconds to delay before posting the first recv (or send), format: <recv_delay>[,<send_delay>]\n");
+	printf("\t-g <gid_idx>     Set GID index to use, needed for RoCE, default is use lid\n");
 	printf("\t-h               Print this message\n");
 }
 
@@ -569,7 +580,7 @@ int main(int argc, char *argv[])
 	int c;
 	char *s;
 
-	while ((c = getopt(argc, argv, "t:sin:D:bh")) != -1) {
+	while ((c = getopt(argc, argv, "t:sin:D:g:bh")) != -1) {
 		switch (c) {
 		case 't':
 			if (strcasecmp(optarg, "read") == 0)
@@ -593,6 +604,9 @@ int main(int argc, char *argv[])
 			s = strchr(optarg, ',');
 			if (s)
 				send_delay = atoi(s + 1);
+			break;
+		case 'g':
+			gid_idx = atoi(optarg);
 			break;
 		case 'b':
 			bidir = 1;
