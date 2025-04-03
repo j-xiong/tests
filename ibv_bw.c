@@ -61,6 +61,7 @@ static size_t			buf_size;
 static int			use_sync_ib;
 static int			use_inline_send;
 static int			gid_idx = -1;
+static int			mtu = -1;
 
 static double when(void)
 {
@@ -187,13 +188,51 @@ static void free_buf(void)
 	free(buf);
 }
 
+static int mtu_to_size(int mtu)
+{
+	switch (mtu) {
+	case IBV_MTU_256:
+		return 256;
+	case IBV_MTU_512:
+		return 512;
+	case IBV_MTU_1024:
+		return 1024;
+	case IBV_MTU_2048:
+		return 2048;
+	case IBV_MTU_4096:
+		return 4096;
+	default:
+		fprintf(stderr, "Invalid MTU size %d\n", mtu);
+		return -1;
+	}
+}
+
+static int size_to_mtu(int size)
+{
+	switch (size) {
+	case 256:
+		return IBV_MTU_256;
+	case 512:
+		return IBV_MTU_512;
+	case 1024:
+		return IBV_MTU_1024;
+	case 2048:
+		return IBV_MTU_2048;
+	case 4096:
+		return IBV_MTU_4096;
+	default:
+		fprintf(stderr, "Invalid MTU size %d\n", size);
+		return -1;
+	}
+}
+
 static int connect_ib(int port, struct business_card *dest)
 {
 	struct ibv_qp_attr qp_attr = {};
 	int qp_rtr_flags, qp_rts_flags;
 
 	qp_attr.qp_state		= IBV_QPS_RTR;
-	qp_attr.path_mtu		= IBV_MTU_4096;
+	qp_attr.path_mtu		= mtu;
 	qp_attr.dest_qp_num		= dest->qpn;
 	qp_attr.rq_psn			= dest->psn;
 	qp_attr.max_dest_rd_atomic	= 16;
@@ -292,8 +331,13 @@ static int init_ib(int sockfd)
 	qp_attr.qp_access_flags = IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_WRITE;
 	CHECK_ERROR( ibv_modify_qp(qp, &qp_attr, qp_init_flags) );
 
-	/* get local address */
+	/* get local address & mtu */
 	CHECK_ERROR( ibv_query_port(context, ib_port, &port_attr) );
+
+	if (mtu == -1)
+		mtu = port_attr.active_mtu;
+
+	printf("port %d, MTU %d, MTU size %d\n", ib_port, mtu, mtu_to_size(mtu));
 
 	/* prepare my information */
 	if (gid_idx >= 0)
@@ -553,7 +597,7 @@ err_out:
 
 static void usage(char *prog)
 {
-	printf("Usage: %s [-t read|wite|send][-s][-i][-n <iters>][-D <delay][-g <gid_idx>][-b][-h] server_name\n", prog);
+	printf("Usage: %s [-t read|wite|send][-s][-i][-n <iters>][-D <delay][-g <gid_idx>][-m <mtu_size>][-b][-h] server_name\n", prog);
 	printf("Optins:\n");
 	printf("\t-t <test_type>   Type of test to perform, can be 'read', 'write', or 'send', default: read\n");
 	printf("\t-s               Sync with send/recv at the end\n");
@@ -562,6 +606,7 @@ static void usage(char *prog)
 	printf("\t-n <iters>       Set number of iterations per message size\n");
 	printf("\t-D <delay>       Microseconds to delay before posting the first recv (or send), format: <recv_delay>[,<send_delay>]\n");
 	printf("\t-g <gid_idx>     Set GID index to use, needed for RoCE, default is use lid\n");
+	printf("\t-m <mtu_size>    Set MTU size (512, 1024, 2048, 4096), default is auto detect\n");
 	printf("\t-h               Print this message\n");
 }
 
@@ -580,7 +625,7 @@ int main(int argc, char *argv[])
 	int c;
 	char *s;
 
-	while ((c = getopt(argc, argv, "t:sin:D:g:bh")) != -1) {
+	while ((c = getopt(argc, argv, "t:sin:D:g:m:bh")) != -1) {
 		switch (c) {
 		case 't':
 			if (strcasecmp(optarg, "read") == 0)
@@ -607,6 +652,9 @@ int main(int argc, char *argv[])
 			break;
 		case 'g':
 			gid_idx = atoi(optarg);
+			break;
+		case 'm':
+			mtu = size_to_mtu(atoi(optarg));
 			break;
 		case 'b':
 			bidir = 1;
